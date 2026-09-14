@@ -307,50 +307,22 @@ export function arbitrateNativeStatus(input: {
     input.assessment.reportedDisposition === "blocked" &&
     input.assessment.blocker
   ) {
-    const owner = input.assessment.blocker.boardOwned
-      ? ("board" as const)
-      : { agentId: input.agentId };
-    if (input.assessment.blocker.scope === "task_wide") {
-      return {
-        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
-        statusAction: "blocked",
-        toStatus: "blocked",
-        reasonCode: "task_wide_blocker_bound",
-        unblockDescriptor: {
-          owner,
-          action: input.assessment.blocker.unblockAction,
-        },
-        effects: [
-          {
-            kind: "bind_blocker",
-            owner,
-            action: input.assessment.blocker.unblockAction,
-          },
-          {
-            kind: "notify_owner",
-            agentId: input.agentId,
-            reason: "task_wide_blocker_bound",
-          },
-        ],
-      };
-    }
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
-      statusAction: "blocked",
-      toStatus: "blocked",
-      reasonCode: "current_track_blocker_waiting",
-      // A provider's current_track label is not evidence that another
-      // authorized, productive track exists. Bind the actual unblock request
-      // without waking the same agent to repeat the blocked work or old title.
-      unblockDescriptor: {
-        owner: "board",
-        action: input.assessment.blocker.unblockAction,
-      },
+      statusAction: "in_progress",
+      toStatus: "in_progress",
+      reasonCode: "blocker_without_dependency_continuation",
+      // Model prose can explain why work did not finish, but only an unresolved
+      // issue dependency may move the source issue to blocked. Keep this task
+      // runnable and preserve the reported action on the durable continuation.
+      unblockDescriptor: null,
       effects: [
         {
-          kind: "bind_blocker",
-          owner: "board",
-          action: input.assessment.blocker.unblockAction,
+          kind: "enqueue_continuation",
+          continuationKind: "same_agent",
+          summary: input.assessment.blocker.unblockAction,
+          idempotencyKey: "native-blocker-without-dependency",
+          agentId: input.agentId,
         },
       ],
     };

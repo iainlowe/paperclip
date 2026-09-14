@@ -10648,6 +10648,40 @@ export function issueService(db: Db) {
           });
         }
       }
+      // Native execution finalization bypasses the public issue route and
+      // projects its decision through this service. Enforce the same lifecycle
+      // invariant at that internal boundary whenever a status decision is
+      // being attached. Other system-owned recovery holds retain their
+      // separate recovery-action contract.
+      if (
+        existing.status !== "blocked" &&
+        patch.status === "blocked" &&
+        patch.lastStatusDecisionId != null
+      ) {
+        const dependencyReadiness =
+          blockedByIssueIds === undefined
+            ? (
+                await listIssueDependencyReadinessMap(
+                  dbOrTx,
+                  existing.companyId,
+                  [id],
+                )
+              ).get(id)
+            : null;
+        const unresolvedBlockerIssueIds =
+          blockedByIssueIds !== undefined
+            ? await listUnresolvedBlockerIssueIds(
+                dbOrTx,
+                existing.companyId,
+                blockedByIssueIds,
+              )
+            : (dependencyReadiness?.unresolvedBlockerIssueIds ?? []);
+        if (unresolvedBlockerIssueIds.length === 0) {
+          throw unprocessable(
+            "Entering blocked requires at least one unresolved first-class blocker",
+          );
+        }
+      }
       const shouldValidateNextAssignee =
         Boolean(nextAssigneeAgentId) &&
         (issueData.assigneeAgentId !== undefined ||

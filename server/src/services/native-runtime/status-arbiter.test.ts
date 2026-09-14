@@ -410,7 +410,7 @@ describe("native status authority", () => {
     );
   });
 
-  it("blocks only for a task-wide blocker with a named owner and action", () => {
+  it("keeps a task-wide prose blocker runnable without a dependency", () => {
     expect(
       arbitrate({
         assessment: assessment({
@@ -424,21 +424,23 @@ describe("native status authority", () => {
       }),
     ).toEqual(
       expect.objectContaining({
-        toStatus: "blocked",
-        unblockDescriptor: { owner: "board", action: "Approve access" },
+        toStatus: "in_progress",
+        reasonCode: "blocker_without_dependency_continuation",
+        unblockDescriptor: null,
         effects: [
-          { kind: "bind_blocker", owner: "board", action: "Approve access" },
           {
-            kind: "notify_owner",
+            kind: "enqueue_continuation",
+            continuationKind: "same_agent",
+            summary: "Approve access",
+            idempotencyKey: "native-blocker-without-dependency",
             agentId: "agent",
-            reason: "task_wide_blocker_bound",
           },
         ],
       }),
     );
   });
 
-  it("waits for an explicit unblock instead of inventing another productive track", () => {
+  it("keeps a current-track prose blocker runnable without a dependency", () => {
     expect(
       arbitrate({
         assessment: assessment({
@@ -458,21 +460,19 @@ describe("native status authority", () => {
       }),
     ).toEqual(
       expect.objectContaining({
-        statusAction: "blocked",
-        toStatus: "blocked",
+        statusAction: "in_progress",
+        toStatus: "in_progress",
         policyVersion: "phase6-v5",
-        reasonCode: "current_track_blocker_waiting",
-        unblockDescriptor: {
-          owner: "board",
-          action:
-            "Grant access to the current Board comment attachment, then explicitly retry.",
-        },
+        reasonCode: "blocker_without_dependency_continuation",
+        unblockDescriptor: null,
         effects: [
           {
-            kind: "bind_blocker",
-            owner: "board",
-            action:
+            kind: "enqueue_continuation",
+            continuationKind: "same_agent",
+            summary:
               "Grant access to the current Board comment attachment, then explicitly retry.",
+            idempotencyKey: "native-blocker-without-dependency",
+            agentId: "agent",
           },
         ],
       }),
