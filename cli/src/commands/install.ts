@@ -294,6 +294,7 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     // not run prepack. Materialize the UI payload required by the server's
     // package files before prepare-bundled-package copies them.
     await runCommand("corepack", ["pnpm", "--dir", "server", "run", "prepare:ui-dist"], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
+    fs.cpSync(path.join(checkoutPath, "skills"), path.join(checkoutPath, "server", "skills"), { recursive: true });
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
     for (const [index, workspacePackage] of workspacePackages.entries()) {
