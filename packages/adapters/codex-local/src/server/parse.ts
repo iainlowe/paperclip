@@ -127,6 +127,24 @@ export function isCodexUnknownSessionError(stdout: string, stderr: string): bool
   );
 }
 
+/**
+ * Codex owns one writer per persisted thread. Recovery can briefly overlap the
+ * still-draining process that owns the saved thread, so resuming that thread is
+ * unsafe even when the task's execution workspace is different. This matcher
+ * is deliberately limited to Codex's explicit persistence conflict instead of
+ * treating arbitrary resume failures as permission to replace provider state.
+ */
+export function isCodexActiveWriterConflict(stdout: string, stderr: string): boolean {
+  const haystack = `${stdout}\n${stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+  return /thread-store conflict: thread [a-z0-9-]+ already has an active writer|thread\/resume failed: thread [a-z0-9-]+ already has an active writer/i.test(
+    haystack,
+  );
+}
+
 function buildCodexErrorHaystack(input: {
   stdout?: string | null;
   stderr?: string | null;

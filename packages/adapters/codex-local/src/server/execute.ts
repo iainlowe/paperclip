@@ -67,6 +67,7 @@ import {
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
+  isCodexActiveWriterConflict,
 } from "./parse.js";
 import {
   codexHomeHasUsableAuth,
@@ -1389,6 +1390,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
       clearSessionOnMissingSession = false,
       isRetry = false,
+      sessionRecoveryReason: "missing_session" | "active_writer_conflict" | null = null,
     ): AdapterExecutionResult => {
       if (attempt.monitor?.fired) {
         const errorMessage = formatOutputInactivityMonitorErrorMessage(attempt.monitor.elapsedMsSinceLastEvent);
@@ -1541,6 +1543,15 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         resultJson: {
           stdout: attempt.proc.stdout,
           stderr: attempt.proc.stderr,
+          ...(sessionRecoveryReason
+            ? {
+                sessionRecovery: {
+                  reason: sessionRecoveryReason,
+                  disposition: "fresh_session_retry",
+                  retryAttempts: 1,
+                },
+              }
+            : {}),
           ...(errorFamily ? { errorFamily } : {}),
           ...(transientRetryNotBefore ? { retryNotBefore: transientRetryNotBefore.toISOString() } : {}),
           ...(transientRetryNotBefore ? { transientRetryNotBefore: transientRetryNotBefore.toISOString() } : {}),
@@ -1554,6 +1565,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     let executionError: unknown = null;
     try {
       const initial = await runAttempt(sessionId);
+      const activeWriterConflict =
+        sessionId &&
+        !initial.proc.timedOut &&
+        !initial.proc.signal &&
+        !initial.parsed.sessionId &&
+        (initial.proc.exitCode ?? 0) !== 0 &&
+        isCodexActiveWriterConflict(initial.proc.stdout, initial.rawStderr);
       if (
         sessionId &&
         !initial.proc.timedOut &&
@@ -1562,14 +1580,17 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         // After Ctrl-C those warnings must not restart the cancelled turn.
         !initial.parsed.sessionId &&
         (initial.proc.exitCode ?? 0) !== 0 &&
-        isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr)
+        (activeWriterConflict || isCodexUnknownSessionError(initial.proc.stdout, initial.rawStderr))
       ) {
+        const sessionRecoveryReason = activeWriterConflict ? "active_writer_conflict" : "missing_session";
         await onLog(
           "stdout",
-          `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
+          activeWriterConflict
+            ? `[paperclip] Codex resume session "${sessionId}" has an active thread-store writer; applying one bounded fresh-session retry.\n`
+            : `[paperclip] Codex resume session "${sessionId}" is unavailable; retrying with a fresh session.\n`,
         );
         const retry = await runAttempt(null);
-        const retryResult = toResult(retry, true, true);
+        const retryResult = toResult(retry, true, true, sessionRecoveryReason);
         if (retryResult.errorMessage) {
           executionError = new Error(retryResult.errorMessage);
         }

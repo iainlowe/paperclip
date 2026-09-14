@@ -6,6 +6,7 @@ import {
   isCodexProviderQuotaError,
   isCodexTransientUpstreamError,
   isCodexUnknownSessionError,
+  isCodexActiveWriterConflict,
   parseCodexJsonl,
 } from "./parse.js";
 
@@ -184,6 +185,28 @@ describe("isCodexUnknownSessionError", () => {
 
   it("does not classify unrelated Codex failures as stale sessions", () => {
     expect(isCodexUnknownSessionError("", "model overloaded")).toBe(false);
+  });
+});
+
+describe("isCodexActiveWriterConflict", () => {
+  it("detects the thread-store and resume collision forms", () => {
+    expect(
+      isCodexActiveWriterConflict(
+        "",
+        "failed to initialize thread persistence: thread-store conflict: thread 01a09d5c-0758-7482-b7b9-84115961dd42 already has an active writer",
+      ),
+    ).toBe(true);
+    expect(
+      isCodexActiveWriterConflict(
+        "",
+        "Error: thread/resume: thread/resume failed: thread 01a09d5c-0758-7482-b7b9-84115961dd42 already has an active writer (code -32600)",
+      ),
+    ).toBe(true);
+  });
+
+  it("does not classify independent session or provider failures as writer conflicts", () => {
+    expect(isCodexActiveWriterConflict("", "thread abc not found")).toBe(false);
+    expect(isCodexActiveWriterConflict("", "model overloaded")).toBe(false);
   });
 });
 

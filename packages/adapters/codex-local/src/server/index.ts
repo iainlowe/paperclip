@@ -51,7 +51,7 @@ export {
   isCodexAuthCachePath,
   readSubscriptionAccountId,
 } from "./codex-auth-cache.js";
-export { parseCodexJsonl, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
+export { parseCodexJsonl, isCodexActiveWriterConflict, isCodexHarnessCrash, isCodexProviderQuotaError, isCodexTransientUpstreamError, isCodexUnknownSessionError } from "./parse.js";
 export {
   getQuotaWindows,
   readCodexAuthInfo,

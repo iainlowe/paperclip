@@ -116,6 +116,20 @@ function buildContext(config: Record<string, unknown> = {}) {
   };
 }
 
+function buildResumedContext(runId: string, sessionId: string) {
+  const context = buildContext({ engine: "cli" });
+  return {
+    ...context,
+    runId,
+    runtime: {
+      sessionId,
+      sessionParams: { sessionId },
+      sessionDisplayId: sessionId,
+      taskKey: `issue:${runId}`,
+    },
+  };
+}
+
 describe("codex_local stderr fallback error derivation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -164,6 +178,81 @@ describe("codex_local stderr fallback error derivation", () => {
     const result = await execute(buildContext() as never);
 
     expect(result.errorMessage).toBe("Codex exited with code 1");
+  });
+});
+
+describe("codex_local active-writer recovery guard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("turns one resume collision into exactly one fresh-session retry", async () => {
+    runAdapterExecutionTargetProcess
+      .mockResolvedValueOnce({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr:
+          "failed to initialize thread persistence: thread-store conflict: thread saved-thread already has an active writer",
+        pid: 123,
+        startedAt: new Date().toISOString(),
+      })
+      .mockResolvedValueOnce({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: [
+          JSON.stringify({ type: "thread.started", thread_id: "isolated-thread" }),
+          JSON.stringify({ type: "turn.completed", usage: {} }),
+        ].join("\n"),
+        stderr: "",
+        pid: 124,
+        startedAt: new Date().toISOString(),
+      });
+    const context = buildResumedContext("collision-run", "saved-thread");
+
+    const result = await execute(context as never);
+
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(2);
+    expect(runAdapterExecutionTargetProcess.mock.calls[0]?.[3]).toContain("saved-thread");
+    expect(runAdapterExecutionTargetProcess.mock.calls[1]?.[3]).not.toContain("resume");
+    expect(result.sessionId).toBe("isolated-thread");
+    expect(result.resultJson).toMatchObject({
+      sessionRecovery: {
+        reason: "active_writer_conflict",
+        disposition: "fresh_session_retry",
+        retryAttempts: 1,
+      },
+    });
+    expect(context.onLog).toHaveBeenCalledWith(
+      "stdout",
+      expect.stringContaining("applying one bounded fresh-session retry"),
+    );
+  });
+
+  it("keeps independent fresh issue starts isolated and concurrent", async () => {
+    runAdapterExecutionTargetProcess.mockImplementation(async (runId: string) => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        JSON.stringify({ type: "thread.started", thread_id: `thread-${runId}` }),
+        JSON.stringify({ type: "turn.completed", usage: {} }),
+      ].join("\n"),
+      stderr: "",
+      pid: runId === "issue-a" ? 201 : 202,
+      startedAt: new Date().toISOString(),
+    }));
+
+    const [issueA, issueB] = await Promise.all([
+      execute({ ...buildContext({ engine: "cli" }), runId: "issue-a" } as never),
+      execute({ ...buildContext({ engine: "cli" }), runId: "issue-b" } as never),
+    ]);
+
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledTimes(2);
+    expect(issueA.sessionId).toBe("thread-issue-a");
+    expect(issueB.sessionId).toBe("thread-issue-b");
   });
 });
 
