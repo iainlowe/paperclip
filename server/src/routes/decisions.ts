@@ -146,10 +146,29 @@ export function decisionRoutes(db: Db, options: DecisionServiceOptions) {
     res.status(201).json(await svc.createBundle({ companyId, actor: req.actor, ...agent, ...req.body }));
   });
   router.get("/companies/:companyId/decisions", async (req, res) => {
-    const companyId = req.params.companyId as string; assertBoard(req); assertCompanyAccess(req, companyId);
+    const companyId = req.params.companyId as string;
+    assertBoardOrAgent(req);
+    assertCompanyAccess(req, companyId);
+    const access = await authorizationService(db).decide({
+      actor: req.actor,
+      action: "decision_queue:read",
+      resource: { type: "company", companyId },
+    });
+    if (!access.allowed) throw forbidden(access.explanation, authorizationDeniedDetails(access));
     const query = z.object({ status: z.enum(["open", "decided", "expired", "cancelled"]).optional(), bundleId: z.string().guid().optional(), targetIssueId: z.string().guid().optional(), originAgentId: z.string().guid().optional(), limit: z.coerce.number().int().positive().max(100).optional() }).safeParse(req.query);
     if (!query.success) { res.status(400).json({ error: "Invalid decision filters", details: query.error.flatten() }); return; }
-    res.json(await svc.list(companyId, query.data));
+    const listed = await svc.list(companyId, query.data);
+    if (req.actor.type !== "agent") {
+      res.json(listed);
+      return;
+    }
+    const visible = [];
+    for (const decision of listed) {
+      if (await canReadDecisionSource(db, req.actor, companyId, "decision", decision.id)) {
+        visible.push(decision);
+      }
+    }
+    res.json(visible);
   });
   /**
    * Gardener telemetry contract:
