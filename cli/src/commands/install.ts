@@ -297,13 +297,35 @@ export async function installGitPayload(repo: string, sha: string, runCommand: C
     fs.cpSync(path.join(checkoutPath, "skills"), path.join(checkoutPath, "server", "skills"), { recursive: true });
     const metadata = JSON.parse(fs.readFileSync(path.join(checkoutPath, "cli", "package.json"), "utf8")) as { version: string };
     const workspacePackages = resolveGitInstallWorkspacePackages(checkoutPath);
+    const workspaceVersions = new Map(workspacePackages.map((workspacePackage) => {
+      const manifest = JSON.parse(fs.readFileSync(path.join(checkoutPath, workspacePackage.dir, "package.json"), "utf8")) as { version: string };
+      return [workspacePackage.name, manifest.version];
+    }));
     for (const [index, workspacePackage] of workspacePackages.entries()) {
       const packageDir = path.join(checkoutPath, workspacePackage.dir);
-      const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as { bundleDependencies?: string[]; bundledDependencies?: string[] };
+      const packageJson = JSON.parse(fs.readFileSync(path.join(packageDir, "package.json"), "utf8")) as {
+        bundleDependencies?: string[];
+        bundledDependencies?: string[];
+        dependencies?: Record<string, string>;
+        optionalDependencies?: Record<string, string>;
+        peerDependencies?: Record<string, string>;
+      };
       const bundledDependencies = packageJson.bundleDependencies ?? packageJson.bundledDependencies ?? [];
       if (bundledDependencies.length > 0) {
         const stagedPackage = path.join(stagingRoot, `workspace-package-${index}`);
         await runCommand(process.execPath, [path.join(checkoutPath, "scripts", "prepare-bundled-package.mjs"), packageDir, stagedPackage], { cwd: checkoutPath, env: buildEnv(), maxBuffer: 32 * 1024 * 1024 });
+        const stagedManifestPath = path.join(stagedPackage, "package.json");
+        const stagedManifest = JSON.parse(fs.readFileSync(stagedManifestPath, "utf8")) as Record<string, unknown>;
+        for (const section of ["dependencies", "optionalDependencies", "peerDependencies"] as const) {
+          const sourceDependencies = packageJson[section] as Record<string, string> | undefined;
+          const stagedDependencies = stagedManifest[section] as Record<string, string> | undefined;
+          if (!sourceDependencies || !stagedDependencies) continue;
+          for (const [dependencyName, specifier] of Object.entries(sourceDependencies)) {
+            const dependencyVersion = workspaceVersions.get(dependencyName);
+            if (specifier.startsWith("workspace:") && dependencyVersion) stagedDependencies[dependencyName] = dependencyVersion;
+          }
+        }
+        fs.writeFileSync(stagedManifestPath, `${JSON.stringify(stagedManifest, null, 2)}\n`);
         // prepare-bundled-package has already materialized and built this
         // detached package. Its source-relative lifecycle scripts cannot run
         // from the staging directory and must not be invoked a second time.
