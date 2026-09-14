@@ -9217,6 +9217,59 @@ export function resolveHeartbeatSchedulingSuppression(
   return { suppressed: false, reason: null };
 }
 
+/**
+ * Claim a persisted task session immediately before provider dispatch.
+ *
+ * The row lock makes overlapping completion/comment continuations
+ * deterministic across server processes: the first run keeps continuity;
+ * a competing run must start an isolated thread.
+ */
+export async function claimCodexTaskSessionForDispatch(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    adapterType: string;
+    taskKey: string;
+    runId: string;
+  },
+): Promise<"claimed" | "active_writer_guarded" | "missing"> {
+  return db.transaction(async (tx) => {
+    const session = await tx
+      .select()
+      .from(agentTaskSessions)
+      .where(
+        and(
+          eq(agentTaskSessions.companyId, input.companyId),
+          eq(agentTaskSessions.agentId, input.agentId),
+          eq(agentTaskSessions.adapterType, input.adapterType),
+          eq(agentTaskSessions.taskKey, input.taskKey),
+        ),
+      )
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!session) return "missing";
+
+    const priorRun = session.lastRunId
+      ? await tx
+          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, session.lastRunId))
+          .then((rows) => rows[0] ?? null)
+      : null;
+    const guarded =
+      priorRun !== null &&
+      priorRun.id !== input.runId &&
+      priorRun.status === "running";
+
+    await tx
+      .update(agentTaskSessions)
+      .set({ lastRunId: input.runId, updatedAt: new Date() })
+      .where(eq(agentTaskSessions.id, session.id));
+    return guarded ? "active_writer_guarded" : "claimed";
+  });
+}
+
 export function heartbeatService(
   db: Db,
   options: HeartbeatServiceOptions = {},
@@ -12371,6 +12424,9 @@ export function heartbeatService(
     sessionDisplayId: string | null;
     lastRunId: string | null;
     lastError: string | null;
+    /** When set, do not let an older overlapping run replace the session
+     * claimed by a newer dispatch. */
+    expectedClaimRunId?: string;
   }) {
     return db.transaction(async (tx) => {
       const [issue] = await tx.select().from(issues).where(and(sql`${issues.id}::text = ${input.taskKey}`, eq(issues.companyId, input.companyId))).for("update");
@@ -12389,7 +12445,14 @@ export function heartbeatService(
           lastError: input.lastError,
           updatedAt: new Date(),
         })
-        .where(eq(agentTaskSessions.id, existing.id))
+        .where(
+          and(
+            eq(agentTaskSessions.id, existing.id),
+            ...(input.expectedClaimRunId
+              ? [eq(agentTaskSessions.lastRunId, input.expectedClaimRunId)]
+              : []),
+          ),
+        )
         .returning()
         .then((rows) => rows[0] ?? null);
     }
@@ -23690,8 +23753,31 @@ export function heartbeatService(
             }
             const guardedDispatch =
               await dispatchResolvedInteractionContinuationWithAtomicGate(
-                (markDispatchStarted) => {
+                async (markDispatchStarted) => {
                   legacyAdapterEntered = true;
+                  if (
+                    agent.adapterType === "codex_local" &&
+                    taskKey &&
+                    runtimeForAdapter.sessionId
+                  ) {
+                    const claim = await claimCodexTaskSessionForDispatch(db, {
+                      companyId: agent.companyId,
+                      agentId: agent.id,
+                      adapterType: agent.adapterType,
+                      taskKey,
+                      runId: run.id,
+                    });
+                    if (claim === "active_writer_guarded") {
+                      runtimeForAdapter.sessionId = null;
+                      runtimeForAdapter.sessionParams = null;
+                      runtimeForAdapter.sessionDisplayId = null;
+                      delete executionContinuation?.resumeDelta;
+                      await onLog(
+                        "stderr",
+                        "[paperclip] A live run already owns this task's persisted Codex thread; starting one isolated fresh session.\n",
+                      );
+                    }
+                  }
                   return adapter.execute({
                     runId: run.id,
                     agent,
@@ -24672,6 +24758,10 @@ export function heartbeatService(
                 sessionDisplayId: nextSessionState.displayId,
                 lastRunId: finalizedRun.id,
                 lastError: runErrorMessage,
+                expectedClaimRunId:
+                  agent.adapterType === "codex_local"
+                    ? finalizedRun.id
+                    : undefined,
               });
             }
           }
@@ -25004,6 +25094,8 @@ export function heartbeatService(
                 previousSessionDisplayId,
               lastRunId: failedRun.id,
               lastError: message,
+              expectedClaimRunId:
+                agent.adapterType === "codex_local" ? failedRun.id : undefined,
             });
           }
         }

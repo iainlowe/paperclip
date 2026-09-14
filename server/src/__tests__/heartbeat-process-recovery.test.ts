@@ -198,6 +198,7 @@ vi.mock("../adapters/index.ts", async () => {
 import {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
+  claimCodexTaskSessionForDispatch,
   heartbeatService,
   parseSandboxProviderPluginNotReadyFailureMessage,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
@@ -654,6 +655,83 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       await closeRegisteredClients(externalTestDatabaseUrl);
     }
     await tempDb?.cleanup();
+  });
+
+  it("atomically isolates a competing Codex task-session writer while independent tasks keep distinct claims", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Codex session guard",
+      issuePrefix: `G${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Guarded Codex",
+      role: "engineer",
+      status: "running",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const sourceA = randomUUID();
+    const sourceB = randomUUID();
+    const claimA = randomUUID();
+    const claimB = randomUUID();
+    const independentA = randomUUID();
+    const independentB = randomUUID();
+    await db.insert(heartbeatRuns).values([
+      {
+        id: sourceA, companyId, agentId, invocationSource: "assignment",
+        triggerDetail: "system", status: "succeeded",
+      },
+      {
+        id: sourceB, companyId, agentId, invocationSource: "assignment",
+        triggerDetail: "system", status: "succeeded",
+      },
+      ...[claimA, claimB, independentA, independentB].map((id) => ({
+        id,
+        companyId,
+        agentId,
+        invocationSource: "assignment" as const,
+        triggerDetail: "system" as const,
+        status: "running" as const,
+      })),
+    ]);
+    await db.insert(agentTaskSessions).values([
+      {
+        companyId, agentId, adapterType: "codex_local", taskKey: "same-issue",
+        sessionParamsJson: { sessionId: "shared-thread" }, lastRunId: sourceA,
+      },
+      {
+        companyId, agentId, adapterType: "codex_local", taskKey: "issue-a",
+        sessionParamsJson: { sessionId: "thread-a" }, lastRunId: sourceA,
+      },
+      {
+        companyId, agentId, adapterType: "codex_local", taskKey: "issue-b",
+        sessionParamsJson: { sessionId: "thread-b" }, lastRunId: sourceB,
+      },
+    ]);
+    const claim = (taskKey: string, runId: string) =>
+      claimCodexTaskSessionForDispatch(db, {
+        companyId, agentId, adapterType: "codex_local", taskKey, runId,
+      });
+
+    const competing = await Promise.all([
+      claim("same-issue", claimA),
+      claim("same-issue", claimB),
+    ]);
+    expect(competing.sort()).toEqual(["active_writer_guarded", "claimed"]);
+    await expect(
+      Promise.all([
+        claim("issue-a", independentA),
+        claim("issue-b", independentB),
+      ]),
+    ).resolves.toEqual(["claimed", "claimed"]);
   });
 
   async function seedRunFixture(input?: {
