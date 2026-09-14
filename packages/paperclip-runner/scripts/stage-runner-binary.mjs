@@ -8,7 +8,13 @@ const execFileAsync = promisify(execFile);
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const executable = process.platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd";
-const source = path.join(packageRoot, "runner", "target", "release", executable);
+// Cargo may be redirected to a writable target directory by managed/source
+// installers. Keep staging coupled to the same Cargo contract instead of
+// assuming the package-local default.
+const cargoTargetDirectory = process.env.CARGO_TARGET_DIR
+  ? path.resolve(process.env.CARGO_TARGET_DIR)
+  : path.join(packageRoot, "runner", "target");
+const source = path.join(cargoTargetDirectory, "release", executable);
 const destinationDirectory = path.join(packageRoot, "dist", "bin");
 const destination = path.join(destinationDirectory, executable);
 
