@@ -517,6 +517,7 @@ import {
   reviewPathConsumedRefFromRun,
 } from "./recovery/review-path-recovery.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
+import { settleSuccessfulRunIssueLifecycle } from "./successful-run-terminal-settlement.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
 import {
@@ -24542,28 +24543,38 @@ export function heartbeatService(
             resolvedPresentationDecision,
           );
           const conversationSettled = await settleConversationTurn(db, livenessRun);
-          await releaseIssueExecutionAndPromote(livenessRun, {
-            suppressImmediateRecovery: conversationSettled ||
-              readNonEmptyString(
-                parseObject(livenessRun.contextSnapshot).goalControlRequestId,
-              ) !== null ||
-              parseObject(livenessRun.contextSnapshot)
-                .resumeSessionGoalHeartbeat === true,
+          // Establish the run's durable next path while the source execution
+          // still owns the issue. Releasing first clears executionRunId and can
+          // promote another queued run; the handoff guard would then either lose
+          // its source-run authority or mistake that run for a continuation.
+          await settleSuccessfulRunIssueLifecycle({
+            conversationSettled,
+            establishRunLivenessContinuation: () =>
+              handleRunLivenessContinuation(livenessRun),
+            establishReviewPathDisposition: () =>
+              handleIssueReviewPathDisposition(livenessRun),
+            establishSuccessfulRunHandoff: () =>
+              handleSuccessfulRunHandoff(
+                issueCommentPolicyResult.outcome === "retry_queued" ||
+                  issueCommentPolicyResult.outcome === "retry_exhausted"
+                  ? {
+                      ...livenessRun,
+                      issueCommentStatus: issueCommentPolicyResult.outcome,
+                    }
+                  : livenessRun,
+                agent,
+              ),
+            releaseIssueExecution: () =>
+              releaseIssueExecutionAndPromote(livenessRun, {
+                suppressImmediateRecovery: conversationSettled ||
+                  readNonEmptyString(
+                    parseObject(livenessRun.contextSnapshot)
+                      .goalControlRequestId,
+                  ) !== null ||
+                  parseObject(livenessRun.contextSnapshot)
+                    .resumeSessionGoalHeartbeat === true,
+              }).then(() => undefined),
           });
-          if (!conversationSettled) {
-          await handleRunLivenessContinuation(livenessRun);
-          await handleIssueReviewPathDisposition(livenessRun);
-          await handleSuccessfulRunHandoff(
-            issueCommentPolicyResult.outcome === "retry_queued" ||
-              issueCommentPolicyResult.outcome === "retry_exhausted"
-              ? {
-                  ...livenessRun,
-                  issueCommentStatus: issueCommentPolicyResult.outcome,
-                }
-              : livenessRun,
-            agent,
-          );
-          }
           if (
             outcome === "succeeded" &&
             issueId &&
