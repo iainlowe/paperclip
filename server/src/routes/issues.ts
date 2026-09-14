@@ -13112,42 +13112,16 @@ export function issueRoutes(
               .then((rows) => rows.length > 0))
           : (await svc.getDependencyReadiness(existing.id))
               .unresolvedBlockerCount > 0;
-        const [pendingInteraction, pendingApproval] = await Promise.all([
-          db
-            .select({ id: issueThreadInteractions.id })
-            .from(issueThreadInteractions)
-            .where(
-              and(
-                eq(issueThreadInteractions.companyId, existing.companyId),
-                eq(issueThreadInteractions.issueId, existing.id),
-                eq(issueThreadInteractions.status, "pending"),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null),
-          db
-            .select({ id: approvals.id })
-            .from(issueApprovals)
-            .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
-            .where(
-              and(
-                eq(issueApprovals.companyId, existing.companyId),
-                eq(issueApprovals.issueId, existing.id),
-                eq(approvals.status, "pending"),
-              ),
-            )
-            .limit(1)
-            .then((rows) => rows[0] ?? null),
-        ]);
-        if (
-          !hasUnresolvedBlocker &&
-          !pendingInteraction &&
-          !pendingApproval &&
-          !descriptor
-        ) {
+        // `blocked` is reserved for a durable issue dependency. A prose
+        // unblock descriptor, pending interaction, or pending approval can
+        // describe a next action, but none creates a first-class dependency
+        // that can wake the issue when it resolves. Those waits belong in
+        // `in_review`; admitting them here lets a zero-candidate pass turn an
+        // otherwise runnable execution issue into a false blocked terminal.
+        if (!hasUnresolvedBlocker) {
           res.status(422).json({
             error:
-              "Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor",
+              "Entering blocked requires at least one unresolved first-class blocker",
           });
           return;
         }

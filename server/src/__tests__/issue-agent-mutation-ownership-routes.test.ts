@@ -1730,7 +1730,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("allows a board actor to name the board as unblock owner", async () => {
+  it("rejects a blocker-less transition even when a board actor names an unblock owner", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "in_progress" }));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue({ status: "in_progress" }),
@@ -1742,14 +1742,11 @@ describe("agent issue mutation checkout ownership", () => {
       unblockDescriptor: { owner: "board", action: "Review the blocker" },
     });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(mockIssueService.update).toHaveBeenCalledWith(
-      issueId,
-      expect.objectContaining({
-        status: "blocked",
-        unblockDescriptor: { owner: "board", action: "Review the blocker" },
-      }),
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.error).toBe(
+      "Entering blocked requires at least one unresolved first-class blocker",
     );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("rejects peer-agent status updates that would clear a recovery action they do not own", async () => {
@@ -2638,7 +2635,6 @@ describe("agent issue mutation checkout ownership", () => {
 
     it.each([
       ["in_progress"],
-      ["blocked"],
       ["todo"],
     ])("lets a watchdog run transition a watched issue to %s", async (status) => {
       denyBaseBoundary();
