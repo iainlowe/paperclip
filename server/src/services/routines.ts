@@ -16,6 +16,7 @@ import {
   goals,
   heartbeatRuns,
   issueInboxArchives,
+  issueRelations,
   issues,
   pluginManagedResources,
   plugins,
@@ -3176,6 +3177,7 @@ export function routineService(
       const issue = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           status: issues.status,
           originKind: issues.originKind,
           originRunId: issues.originRunId,
@@ -3217,6 +3219,45 @@ export function routineService(
             }
             : {}),
         });
+      }
+      if (issue.status === "blocked") {
+        const liveBlocker = await db
+          .select({ id: issues.id })
+          .from(issueRelations)
+          .innerJoin(
+            issues,
+            and(
+              eq(issues.id, issueRelations.issueId),
+              eq(issues.companyId, issueRelations.companyId),
+            ),
+          )
+          .where(
+            and(
+              eq(issueRelations.companyId, issue.companyId),
+              eq(issueRelations.relatedIssueId, issue.id),
+              eq(issueRelations.type, "blocks"),
+              isNull(issues.hiddenAt),
+              not(inArray(issues.status, ["done", "cancelled"])),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null);
+        if (liveBlocker) {
+          return finalizeRun(issue.originRunId, {
+            status: "completed",
+            failureReason: null,
+            completedAt: new Date(),
+            triggerPayload: {
+              ...(run.triggerPayload ?? {}),
+              deferredDisposition: {
+                code: "execution_issue_blocked_by_dependency",
+                issueStatus: "blocked",
+                blockerIssueId: liveBlocker.id,
+                recordedAt: new Date().toISOString(),
+              },
+            },
+          });
+        }
       }
       if (issue.status === "blocked" || issue.status === "cancelled") {
         const failureReason = executionIssueTransientFailureReason(issue.status);

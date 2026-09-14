@@ -152,7 +152,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       id: projectId,
       companyId,
       name: "Routines",
-      status: "in_progress",
+      status: "todo",
     });
 
     const svc = routineService(db, {
@@ -322,9 +322,15 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(completedRun?.completedAt).toBeInstanceOf(Date);
   });
 
-  it("moves transient routine run failures into completion context", async () => {
+  it("completes a routine run deferred by a live first-class blocker", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const runId = randomUUID();
+    const blockerIssue = await issueSvc.create(companyId, {
+      projectId: routine.projectId,
+      title: "Named external dependency",
+      status: "in_progress",
+      priority: "high",
+    });
     const executionIssue = await issueSvc.create(companyId, {
       projectId: routine.projectId,
       title: routine.title,
@@ -335,6 +341,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       originKind: "routine_execution",
       originId: routine.id,
       originRunId: runId,
+      blockedByIssueIds: [blockerIssue.id],
     });
 
     await db.insert(routineRuns).values({
@@ -349,30 +356,20 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     });
 
     await svc.syncRunStatusForIssue(executionIssue.id);
-    const [failedRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, runId));
-    expect(failedRun).toMatchObject({
-      status: "failed",
-      failureReason: "Execution issue moved to blocked",
-    });
-    await db.update(issues).set({ status: "done" }).where(eq(issues.id, executionIssue.id));
-    await svc.syncRunStatusForIssue(executionIssue.id);
-
-    const [run] = await db.select().from(routineRuns).where(eq(routineRuns.id, runId));
-    expect(run).toMatchObject({
+    const [deferredRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, runId));
+    expect(deferredRun).toMatchObject({
       status: "completed",
       failureReason: null,
+      completedAt: expect.any(Date),
       triggerPayload: {
         input: "preserved",
-        transientFailure: {
-          code: "execution_issue_status",
-          status: "blocked",
-          reason: "Execution issue moved to blocked",
+        deferredDisposition: {
+          code: "execution_issue_blocked_by_dependency",
+          issueStatus: "blocked",
+          blockerIssueId: blockerIssue.id,
+          recordedAt: expect.any(String),
         },
       },
-    });
-    expect(run?.completedAt).toBeInstanceOf(Date);
-    expect(run?.triggerPayload).toMatchObject({
-      transientFailure: { clearedAt: expect.any(String) },
     });
   });
 
