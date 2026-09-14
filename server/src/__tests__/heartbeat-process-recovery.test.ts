@@ -1121,6 +1121,53 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId, rootIssueId };
   }
 
+  it("reconciles a late claimed wake that projected liveness after an accepted successful disposition", async () => {
+    const source = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "completed",
+    });
+    const completedAt = new Date("2026-03-19T00:04:00.000Z");
+    const lateStartedAt = new Date("2026-03-19T00:06:00.000Z");
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: null,
+        executionRunId: null,
+        completedAt,
+        startedAt: lateStartedAt,
+      })
+      .where(eq(issues.id, source.issueId));
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "claimed", finishedAt: null })
+      .where(eq(agentWakeupRequests.id, source.wakeupRequestId));
+
+    const result =
+      await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.staleSuccessfulDispositionReconciled).toBe(1);
+    expect(result.issueIds).toEqual([source.issueId]);
+    expect(
+      await db
+        .select({
+          status: issues.status,
+          completedAt: issues.completedAt,
+          startedAt: issues.startedAt,
+        })
+        .from(issues)
+        .where(eq(issues.id, source.issueId))
+        .then((rows) => rows[0]),
+    ).toEqual({ status: "done", completedAt, startedAt: completedAt });
+    expect(
+      await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, source.wakeupRequestId))
+        .then((rows) => rows[0]?.status),
+    ).toBe("completed");
+  });
+
   async function bindChatConversation(input: {
     agentId: string;
     companyId: string;

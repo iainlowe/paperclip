@@ -54,6 +54,28 @@ export function isIdempotentFinishSuccessfulRunHandoffWakeStatus(status: string)
   return IDEMPOTENT_HANDOFF_WAKE_STATUS_SET.has(status);
 }
 
+export function shouldReconcileStaleSuccessfulDisposition(input: {
+  issueStatus: string;
+  issueCompletedAt: Date | null;
+  issueStartedAt: Date | null;
+  checkoutRunId: string | null;
+  executionRunId: string | null;
+  latestRunStatus: string | null;
+  latestRunStartedAt: Date | null;
+}) {
+  return Boolean(
+    input.issueStatus === "in_progress" &&
+      input.issueCompletedAt &&
+      input.issueStartedAt &&
+      input.issueStartedAt.getTime() > input.issueCompletedAt.getTime() &&
+      !input.checkoutRunId &&
+      !input.executionRunId &&
+      input.latestRunStatus === "succeeded" &&
+      input.latestRunStartedAt &&
+      input.latestRunStartedAt.getTime() >= input.issueCompletedAt.getTime(),
+  );
+}
+
 /**
  * A plugin (e.g. a graph/workflow engine) owns this issue's lifecycle and may
  * legitimately hold it at `in_progress` for a long time — e.g. an anchor issue

@@ -14,6 +14,7 @@ import {
   isPluginManagedIssueLifecycle,
   isSuccessfulRunHandoffRequiredNoticeBody,
   noticeMetadataReferencesRecoveryAction,
+  shouldReconcileStaleSuccessfulDisposition,
 } from "./successful-run-handoff.js";
 import { UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON } from "@paperclipai/adapter-utils/server-utils";
 
@@ -68,6 +69,39 @@ function decide(overrides: Partial<Parameters<typeof decideSuccessfulRunHandoff>
 }
 
 describe("successful run handoff decision", () => {
+  it("identifies only an impossible post-success liveness projection for disposition reconciliation", () => {
+    const completedAt = new Date("2026-09-14T07:51:14.000Z");
+    const stale = {
+      issueStatus: "in_progress",
+      issueCompletedAt: completedAt,
+      issueStartedAt: new Date("2026-09-14T07:53:02.000Z"),
+      checkoutRunId: null,
+      executionRunId: null,
+      latestRunStatus: "succeeded",
+      latestRunStartedAt: new Date("2026-09-14T07:51:30.000Z"),
+    };
+
+    expect(shouldReconcileStaleSuccessfulDisposition(stale)).toBe(true);
+    expect(
+      shouldReconcileStaleSuccessfulDisposition({
+        ...stale,
+        issueCompletedAt: null,
+      }),
+    ).toBe(false);
+    expect(
+      shouldReconcileStaleSuccessfulDisposition({
+        ...stale,
+        executionRunId: "still-live",
+      }),
+    ).toBe(false);
+    expect(
+      shouldReconcileStaleSuccessfulDisposition({
+        ...stale,
+        latestRunStatus: "failed",
+      }),
+    ).toBe(false);
+  });
+
   it("queues one normal-model corrective wake to the original agent when a successful run has no disposition", () => {
     const decision = decide();
 

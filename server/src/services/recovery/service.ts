@@ -111,6 +111,7 @@ import {
   buildSuccessfulRunHandoffExhaustedNotice,
   isPluginManagedIssueLifecycle,
   noticeMetadataReferencesRecoveryAction,
+  shouldReconcileStaleSuccessfulDisposition,
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
 import {
@@ -4162,6 +4163,7 @@ export function recoveryService(
       successfulContinuationObserved: 0,
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
+      staleSuccessfulDispositionReconciled: 0,
       reviewParticipantRequeued: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
@@ -4244,6 +4246,82 @@ export function recoveryService(
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+
+      // A sanctioned resume clears completedAt before moving a terminal issue
+      // back to in_progress.  Retaining the old completion timestamp therefore
+      // proves that a duplicate/late execution projected liveness after the
+      // successful disposition, rather than that the task was intentionally
+      // reopened.  Reconcile that impossible state before generic continuation
+      // recovery can turn the already-accepted work into another agent run.
+      if (shouldReconcileStaleSuccessfulDisposition({
+        issueStatus: issue.status,
+        issueCompletedAt: issue.completedAt,
+        issueStartedAt: issue.startedAt,
+        checkoutRunId: issue.checkoutRunId,
+        executionRunId: issue.executionRunId,
+        latestRunStatus: latestRun?.status ?? null,
+        latestRunStartedAt: latestRun?.startedAt ?? null,
+      })) {
+        const reconciledAt = new Date();
+        const staleCompletedAt = issue.completedAt!;
+        const staleStartedAt = issue.startedAt!;
+        const successfulRunId = latestRun!.id;
+        const reconciled = await db.transaction(async (tx) => {
+          const [updated] = await tx
+            .update(issues)
+            .set({
+              status: "done",
+              startedAt: issue.completedAt,
+              updatedAt: reconciledAt,
+            })
+            .where(
+              and(
+                eq(issues.id, issue.id),
+                eq(issues.companyId, issue.companyId),
+                eq(issues.status, "in_progress"),
+                sql`${issues.completedAt} = ${staleCompletedAt}`,
+                sql`${issues.startedAt} = ${staleStartedAt}`,
+                isNull(issues.checkoutRunId),
+                isNull(issues.executionRunId),
+              ),
+            )
+            .returning({ id: issues.id });
+          if (!updated) return false;
+          const successfulRun = await tx
+            .select({
+              wakeupRequestId: heartbeatRuns.wakeupRequestId,
+              finishedAt: heartbeatRuns.finishedAt,
+            })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, successfulRunId))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          if (successfulRun?.wakeupRequestId) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "completed",
+                finishedAt: successfulRun.finishedAt ?? reconciledAt,
+                updatedAt: reconciledAt,
+              })
+              .where(
+                and(
+                  eq(agentWakeupRequests.id, successfulRun.wakeupRequestId),
+                  eq(agentWakeupRequests.status, "claimed"),
+                  eq(agentWakeupRequests.runId, successfulRunId),
+                ),
+              );
+          }
+          return true;
+        });
+        if (reconciled) {
+          result.staleSuccessfulDispositionReconciled += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
       // A native chat can finish between the earlier settlement read and this
       // fresh run read, before its response is materialized. Its trusted
       // finalizer owns that settlement; generic productive-work recovery must
