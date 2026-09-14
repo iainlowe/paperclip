@@ -10,7 +10,15 @@ diff --git a/dist/index.js b/dist/index.js
  // The default configuration options for the class
  const defaults = {
      databaseDir: path.join(process.cwd(), 'data', 'db'),
-@@ -133,7 +133,7 @@
+@@ -124,6 +124,6 @@
+             // Initialize the database
+             yield new Promise((resolve, reject) => {
+-                var _a;
++                var _a, _b;
+                 const process = spawn(initdb, [
+                     `--pgdata=${this.options.databaseDir}`,
+                     `--auth=${this.options.authMethod}`,
+@@ -133,13 +133,17 @@
                      `--pwfile=${passwordFile}`,
                      `--lc-messages=${LC_MESSAGES_LOCALE}`,
                      ...this.options.initdbFlags,
@@ -19,7 +27,17 @@ diff --git a/dist/index.js b/dist/index.js
                  // Connect to stderr, as that is where the messages get sent
                  (_a = process.stdout) === null || _a === void 0 ? void 0 : _a.on('data', (chunk) => {
                      // Parse the data as a string and log it
-@@ -177,7 +177,7 @@
+                     const message = chunk.toString('utf-8');
+                     this.options.onLog(message);
+                 });
++                (_b = process.stderr) === null || _b === void 0 ? void 0 : _b.on('data', (chunk) => {
++                    const message = chunk.toString('utf-8');
++                    this.options.onError(message);
++                });
+                 process.on('exit', (code) => {
+                     if (code === 0) {
+                         resolve();
+@@ -177,7 +181,7 @@
                      '-p',
                      this.options.port.toString(),
                      ...this.options.postgresFlags,

@@ -194,7 +194,8 @@ export function prepareBundledPackage(sourceDir, destinationDir, { sourceRoot = 
     );
     if (
       !embeddedPostgresSource.includes("const LC_MESSAGES_LOCALE = 'C';") ||
-      !embeddedPostgresSource.includes("globalThis.process.env")
+      !embeddedPostgresSource.includes("globalThis.process.env") ||
+      !embeddedPostgresSource.includes("process.stderr")
     ) {
       throw new Error("staged embedded-postgres runtime is missing the repository patch");
     }

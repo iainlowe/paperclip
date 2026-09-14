@@ -37,21 +37,19 @@ import { routineService } from "../services/routines.ts";
 import { secretService } from "../services/secrets.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const originalSecretsProviderEnv = process.env.PAPERCLIP_SECRETS_PROVIDER;
 const originalPaperclipApiUrlEnv = process.env.PAPERCLIP_API_URL;
 
-if (!embeddedPostgresSupport.supported) {
-  console.warn(
-    `Skipping embedded Postgres routines service tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
-  );
-}
-
-describeEmbeddedPostgres("routine service live-execution coalescing", () => {
+describe("routine service live-execution coalescing", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
+    if (!embeddedPostgresSupport.supported) {
+      throw new Error(
+        `PostgreSQL is required for routines service persistence verification: ${embeddedPostgresSupport.reason ?? "embedded PostgreSQL is unavailable"}`,
+      );
+    }
     process.env.PAPERCLIP_API_URL = "http://localhost:3100";
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-routines-service-");
     db = createDb(tempDb.connectionString);
@@ -323,13 +321,14 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   it("completes a routine run deferred by a live first-class blocker", async () => {
-    const { companyId, issueSvc, routine, svc } = await seedFixture();
+    const { agentId, companyId, issueSvc, routine, svc } = await seedFixture();
     const runId = randomUUID();
     const blockerIssue = await issueSvc.create(companyId, {
       projectId: routine.projectId,
       title: "Named external dependency",
       status: "in_progress",
       priority: "high",
+      assigneeAgentId: agentId,
     });
     const executionIssue = await issueSvc.create(companyId, {
       projectId: routine.projectId,
