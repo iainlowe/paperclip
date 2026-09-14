@@ -98,4 +98,21 @@ describe("decision routes", () => {
     expect(response.body.error).toBe("Decision snapshot access is not allowed.");
     expect(mocks.list).not.toHaveBeenCalled();
   });
+
+  it("denies an agent a decision snapshot from another company", async () => {
+    const otherCompanyId = randomUUID();
+
+    const response = await request(app({
+      type: "agent",
+      source: "agent_jwt",
+      companyId,
+      agentId,
+      runId,
+      keyScope: { kind: "standard" },
+    })).get(`/api/companies/${otherCompanyId}/decisions?status=open`).expect(403);
+
+    expect(response.body.error).toBe("Agent key cannot access another company");
+    expect(mocks.decideAccess).not.toHaveBeenCalled();
+    expect(mocks.list).not.toHaveBeenCalled();
+  });
 });
