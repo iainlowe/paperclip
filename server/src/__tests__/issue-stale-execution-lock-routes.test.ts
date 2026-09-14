@@ -410,6 +410,51 @@ describeEmbeddedPostgres("stale issue execution lock routes", () => {
     expect(checkoutActivity).toHaveLength(0);
   });
 
+  it("rejects and audits timer checkout of a completed issue without structured resume", async () => {
+    const { companyId, agentId, currentRunId } = await seedCompanyAgentAndRuns();
+    const issueId = randomUUID();
+    const completedAt = new Date();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Completed timer target",
+      status: "done",
+      priority: "high",
+      assigneeAgentId: agentId,
+      completedAt,
+    });
+
+    const res = await request(createApp(agentActor(companyId, agentId, currentRunId)))
+      .post(`/api/issues/${issueId}/checkout`)
+      .send({ agentId, expectedStatuses: ["done"] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(409);
+    expect(res.body).toMatchObject({
+      status: "done",
+      reason: "terminal_issue_requires_resume",
+    });
+    const row = await db
+      .select({
+        status: issues.status,
+        completedAt: issues.completedAt,
+        checkoutRunId: issues.checkoutRunId,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]);
+    expect(row).toEqual({ status: "done", completedAt, checkoutRunId: null });
+
+    const rejection = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.checkout_rejected"))
+      .then((rows) => rows[0]);
+    expect(rejection).toMatchObject({
+      action: "issue.checkout_rejected",
+      details: { status: "done", reason: "terminal_issue_requires_resume" },
+    });
+  });
+
   it("restricts admin force-release to board users with company access and writes an audit event", async () => {
     const { companyId, agentId, failedRunId, currentRunId } = await seedCompanyAgentAndRuns();
     const issueId = randomUUID();

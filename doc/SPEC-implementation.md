@@ -1064,7 +1064,8 @@ not create issue comments.
 ```json
 {
   "agentId": "uuid",
-  "expectedStatuses": ["todo", "backlog", "blocked", "in_review"]
+  "expectedStatuses": ["todo", "backlog", "blocked", "in_review"],
+  "resume": false
 }
 ```
 
@@ -1073,6 +1074,10 @@ Server behavior:
 1. single SQL update with `WHERE id = ? AND status IN (?) AND (assignee_agent_id IS NULL OR assignee_agent_id = :agentId)`
 2. if updated row count is 0, return `409` with current owner/status
 3. successful checkout sets `assignee_agent_id`, `status = in_progress`, and `started_at`
+4. `done` and `cancelled` are never eligible for checkout unless the request includes
+   both the terminal status in `expectedStatuses` and structured `resume: true`; a
+   rejected terminal checkout writes an `issue.checkout_rejected` activity record
+   and leaves issue and workspace state unchanged
 
 `POST /issues/:issueId/admin/force-release` is an operator recovery endpoint for stale harness locks. It requires board access to the issue company, clears checkout and execution run lock fields, and may clear the agent assignee when `clearAssignee=true` is passed. The route must write an `issue.admin_force_release` activity log entry containing the previous checkout and execution run IDs.
 

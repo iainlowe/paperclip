@@ -6076,6 +6076,48 @@ describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {
     });
   });
 
+  it("checkout refuses an unattended terminal issue even when a stale caller includes done", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "TimerAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Completed timer target",
+      status: "done",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      completedAt: new Date(),
+    });
+
+    await expect(svc.checkout(issueId, agentId, ["done"], null)).rejects.toMatchObject({
+      status: 409,
+      details: { reason: "terminal_issue_requires_resume" },
+    });
+    expect((await svc.getById(issueId))?.status).toBe("done");
+
+    const resumed = await svc.checkout(issueId, agentId, ["done"], null, true);
+    expect(resumed?.status).toBe("in_progress");
+  });
+
   it("checkout adoption of a stale checkoutRunId preserves the issue's assigneeUserId", async () => {
     // Regression for PR #2482 checkout-adoption review finding: any adoption
     // helper that re-locks an existing in_progress issue (e.g. when the prior

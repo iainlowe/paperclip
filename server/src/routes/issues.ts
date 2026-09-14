@@ -14868,6 +14868,36 @@ export function issueRoutes(
         });
       }
 
+      if (
+        (issue.status === "done" || issue.status === "cancelled") &&
+        req.body.resume !== true
+      ) {
+        const actor = getActorInfo(req);
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.checkout_rejected",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            agentId: req.body.agentId,
+            status: issue.status,
+            reason: "terminal_issue_requires_resume",
+          },
+        });
+        res.status(409).json({
+          error: "Terminal issue checkout requires an explicit resume action",
+          issueId: issue.id,
+          status: issue.status,
+          reason: "terminal_issue_requires_resume",
+        });
+        return;
+      }
+
       const closedExecutionWorkspace =
         await getClosedIssueExecutionWorkspace(issue);
 
@@ -14916,6 +14946,7 @@ export function issueRoutes(
           req.body.agentId,
           req.body.expectedStatuses,
           checkoutRunId,
+          req.body.resume === true,
         );
       } catch (error) {
         if (isUniqueViolation(error, "issues_open_routine_execution_uq")) {

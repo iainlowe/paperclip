@@ -11221,6 +11221,7 @@ export function issueService(db: Db) {
       agentId: string,
       expectedStatuses: string[],
       checkoutRunId: string | null,
+      resume = false,
     ) => {
       const issueCompany = await db
         .select({ companyId: issues.companyId })
@@ -11233,6 +11234,12 @@ export function issueService(db: Db) {
       });
 
       const now = new Date();
+      const terminalCheckoutStatuses = ["done", "cancelled"];
+      const requestedStatuses = resume
+        ? expectedStatuses
+        : expectedStatuses.filter(
+            (status) => !terminalCheckoutStatuses.includes(status),
+          );
       const activePauseHold = await treeControlSvc.getActivePauseHoldGate(
         issueCompany.companyId,
         id,
@@ -11309,12 +11316,13 @@ export function issueService(db: Db) {
           executionRunId: checkoutRunId,
           status: "in_progress",
           startedAt: now,
+          ...(resume ? { completedAt: null, cancelledAt: null } : {}),
           updatedAt: now,
         })
         .where(
           and(
             eq(issues.id, id),
-            inArray(issues.status, expectedStatuses),
+            inArray(issues.status, requestedStatuses),
             or(isNull(issues.assigneeAgentId), sameRunAssigneeCondition),
             executionLockCondition,
           ),
@@ -11340,6 +11348,17 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
 
       if (!current) throw notFound("Issue not found");
+
+      if (terminalCheckoutStatuses.includes(current.status) && !resume) {
+        throw conflict(
+          "Terminal issue checkout requires an explicit resume action",
+          {
+            issueId: current.id,
+            status: current.status,
+            reason: "terminal_issue_requires_resume",
+          },
+        );
+      }
 
       if (
         current.assigneeAgentId === agentId &&
@@ -11421,6 +11440,10 @@ export function issueService(db: Db) {
             status: "in_progress",
             updatedAt: now,
           };
+          if (resume) {
+            adoptionSet.completedAt = null;
+            adoptionSet.cancelledAt = null;
+          }
           if (current.status !== "in_progress") {
             adoptionSet.startedAt = now;
           }
@@ -11430,7 +11453,7 @@ export function issueService(db: Db) {
             .where(
               and(
                 eq(issues.id, id),
-                inArray(issues.status, expectedStatuses),
+                inArray(issues.status, requestedStatuses),
                 eq(issues.executionRunId, current.executionRunId),
                 or(
                   isNull(issues.assigneeAgentId),
